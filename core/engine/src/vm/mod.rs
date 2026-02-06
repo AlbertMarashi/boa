@@ -14,7 +14,7 @@ use crate::{
     script::Script,
 };
 use boa_gc::{Finalize, Gc, Trace, custom_trace};
-use shadow_stack::ShadowStack;
+use shadow_stack::{ShadowEntry, ShadowStack};
 use std::{future::Future, ops::ControlFlow, pin::Pin, task};
 
 #[cfg(feature = "trace")]
@@ -699,8 +699,27 @@ impl Context {
             return ControlFlow::Break(CompletionRecord::Throw(err));
         }
 
+        // Always capture backtrace for catchable errors, since the error may be
+        // caught by an internal handler (e.g. module async wrapper) before
+        // handle_throw has a chance to capture it.
+        if err.backtrace.is_none() {
+            err.backtrace = Some(
+                self.vm
+                    .shadow_stack
+                    .take(self.vm.runtime_limits.backtrace_limit(), self.vm.frame.pc),
+            );
+        }
+
+        // Inject bytecode position from the current frame into native errors
+        // that don't already have one, so the error message includes the
+        // JavaScript source location where the error occurred.
         // Note: -1 because we increment after fetching the opcode.
         let pc = self.vm.frame().pc.saturating_sub(1);
+        err.inject_position(ShadowEntry::Bytecode {
+            pc,
+            source_info: self.vm.frame.code_block().source_info.clone(),
+        });
+
         if self.vm.handle_exception_at(pc) {
             self.vm.pending_exception = Some(err);
             return ControlFlow::Continue(());

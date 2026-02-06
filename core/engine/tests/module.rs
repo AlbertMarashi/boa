@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use boa_engine::builtins::promise::PromiseState;
 use boa_engine::module::{ModuleLoader, Referrer};
-use boa_engine::{Context, JsResult, JsString, Module, Source, js_string};
+use boa_engine::{Context, JsError, JsResult, JsString, Module, Source, js_string};
 
 #[test]
 fn test_json_module_from_str() {
@@ -144,6 +144,46 @@ fn test_json_module_dynamic_import() {
     }
 }
 
+/// Regression test: errors thrown from module code (caught by the module's
+/// internal async handler) should include JavaScript source position info.
+#[test]
+fn test_module_error_has_source_position() {
+    let mut context = Context::default();
+
+    let source = Source::from_bytes(
+        b"
+function foo() {
+  undefined();
+}
+foo();
+",
+    );
+
+    let module = Module::parse(source, None, &mut context).unwrap();
+    let promise = module.load_link_evaluate(&mut context);
+    context.run_jobs().unwrap();
+
+    match promise.state() {
+        PromiseState::Rejected(err_value) => {
+            // Round-trip: opaque JsValue -> JsError -> try_native -> JsNativeError
+            let js_error = JsError::from_opaque(err_value);
+            let native = js_error
+                .try_native(&mut context)
+                .expect("rejected value should be a native Error object");
+
+            assert_eq!(native.message(), "not a callable function");
+
+            // The Display output should contain a position like "(unknown at :3:3)"
+            let display = native.to_string();
+            assert!(
+                display.contains(":3:"),
+                "error should contain line number for the call site, got: {display}"
+            );
+        }
+        PromiseState::Fulfilled(_) => panic!("module should have rejected"),
+        PromiseState::Pending => panic!("module should not be pending"),
+    }
+}
 #[test]
 fn test_json_module_static_import_with_attributes() {
     struct TestModuleLoader(JsString);

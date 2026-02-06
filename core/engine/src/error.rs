@@ -716,6 +716,21 @@ impl JsError {
         self
     }
 
+    /// Injects a bytecode position on the `position` field of a native error.
+    ///
+    /// This is a no-op if the error is not native or if the `position` field already
+    /// contains a bytecode entry (i.e. a JavaScript source location).
+    pub(crate) fn inject_position(&mut self, position: ShadowEntry) {
+        if let Repr::Native(err) = &mut self.inner {
+            match &err.position.0 {
+                Some(ShadowEntry::Bytecode { .. }) => {}
+                _ => {
+                    err.position = IgnoreEq(Some(position));
+                }
+            }
+        }
+    }
+
     /// Is the [`JsError`] catchable in JavaScript.
     #[inline]
     pub(crate) const fn is_catchable(&self) -> bool {
